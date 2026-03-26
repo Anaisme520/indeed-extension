@@ -1,0 +1,35 @@
+{
+"update_url": "https://clients2.google.com/service/update2/crx",
+
+  "manifest_version": 3,
+  "name": "Nurtureme Resume search for indeed",
+  "version": "1.3.0",
+  "permissions": ["scripting", "tabs", "storage"],
+  "externally_connectable": {
+    "matches": [
+      "https://staging-login.nurtureme.ai/*",
+      "http://localhost:*/*",
+      "https://login.nurtureme.ai/*",
+      "https://*.nurtureme.ai/*"
+    ]
+  },
+  "action": {
+    "default_popup": "index.html",
+    "default_icon": {
+      "16": "nurturemeLogo.png",
+      "48": "nurturemeLogo.png",
+      "64": "nurturemeLogo.png",
+      "128": "nurturemeLogo128.png"
+    }
+  },
+  "host_permissions": ["https://employers.indeed.com/*", "https://*.indeed.com/*", "https://*.indeedusercontent.com/*"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["profileSearch.js"],
+      "matches": ["https://employers.indeed.com/*"]
+    }
+  ]
+}
