@@ -5,6 +5,7 @@ const STORAGE_KEYS = {
 };
 
 const DEFAULT_LOCAL_API_BASE_URL = "http://localhost:8000";
+// const DEFAULT_LOCAL_API_BASE_URL = "https://staging-login.nurtureme.ai";
 const DEFAULT_UPLOAD_PATH = "/api/upload-resume";
 const PROFILE_WAIT_MS = 9000;
 const TAB_CLOSE_DELAY_MS = 1200;
@@ -297,9 +298,11 @@ async function searchProfileFromTab(profileUrl) {
           const backToListIndex = lines.findIndex((line) => /back to list/i.test(line));
           const contextualLines =
             backToListIndex >= 0 ? lines.slice(backToListIndex + 1, backToListIndex + 15) : lines.slice(0, 120);
+          // Prefer explicit name nodes (h1 / data-testid) before list-card scraping.
+          // Card text often includes the job title (e.g. "Sales Manager") ahead of the person name.
           const inferredName =
-            getNameFromSelectedCard() ||
             headingCandidates.find(isLikelyName) ||
+            getNameFromSelectedCard() ||
             likelyNameFromLines(contextualLines) ||
             likelyNameFromLines(lines.slice(0, 120)) ||
             "";
