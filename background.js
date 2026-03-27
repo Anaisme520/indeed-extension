@@ -452,9 +452,62 @@ async function searchProfileFromTab(profileUrl) {
                 !isLikelyAddress(line)
             ) || "";
 
+          const inferAppliedFor = () => {
+            const activityMatch = bodyText.match(/submitted an application for\s+([^\n.]+?)(?:\.|\s+on\s|\s*$)/i);
+            if (activityMatch) {
+              const role = clean(activityMatch[1]);
+              if (role.length >= 2 && role.length < 200) return role;
+            }
+
+            if (inferredHeadline) {
+              const beforeBullet = clean(inferredHeadline.split(/\s*[•·]\s*/)[0] || "");
+              if (beforeBullet.length >= 2 && beforeBullet.length < 200) return beforeBullet;
+              const whole = clean(inferredHeadline);
+              if (whole.length >= 2 && whole.length < 200) return whole;
+            }
+
+            try {
+              const currentUrl = new URL(window.location.href);
+              const candidateId = currentUrl.searchParams.get("id");
+              if (!candidateId) return "";
+
+              const matchedAnchor = Array.from(document.querySelectorAll("a[href]")).find((a) => {
+                const href = a.getAttribute("href") || "";
+                return href.includes(`id=${candidateId}`);
+              });
+              if (!matchedAnchor) return "";
+
+              const cardContainer =
+                matchedAnchor.closest("li, article, [role='listitem'], [class*='candidate'], [class*='card']") ||
+                matchedAnchor;
+              const cardLines = clean(cardContainer.textContent || "")
+                .split(/\n/)
+                .map((line) => clean(line))
+                .filter(Boolean);
+
+              for (const line of cardLines) {
+                if (line === inferredName) continue;
+                if (!/[·•]/.test(line)) continue;
+                const jobPart = clean(line.split(/[·•]/)[0] || "");
+                if (!jobPart || jobPart.length < 2 || jobPart.length > 120) continue;
+                if (/^reviewing$/i.test(jobPart)) continue;
+                if (isLikelyAddress(line)) continue;
+                if (isLikelyName(jobPart)) continue;
+                return jobPart;
+              }
+            } catch (_err) {
+              return "";
+            }
+
+            return "";
+          };
+
+          const appliedFor = inferAppliedFor();
+
           return {
             fullName: inferredName,
             headline: inferredHeadline,
+            appliedFor,
             address: inferredAddress,
             summary: summaryFromSelectors || summaryFromText,
             email: pickEmail(mainRoot, bodyText),
