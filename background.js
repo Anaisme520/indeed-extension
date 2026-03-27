@@ -4,14 +4,16 @@ const STORAGE_KEYS = {
   authToken: "authToken",
 };
 
-const DEFAULT_LOCAL_API_BASE_URL = "http://localhost:8000";
-// const DEFAULT_LOCAL_API_BASE_URL = "https://staging-login.nurtureme.ai";
+// const DEFAULT_LOCAL_API_BASE_URL = "http://localhost:8000";
+const DEFAULT_LOCAL_API_BASE_URL = "https://staging-login.nurtureme.ai";
 const DEFAULT_UPLOAD_PATH = "/api/upload-resume";
 const PROFILE_WAIT_MS = 9000;
 const TAB_CLOSE_DELAY_MS = 1200;
+const AUTO_SCAN_DEBOUNCE_MS = 2500;
 
 let queue = [];
 let isRunning = false;
+const autoScanTimers = new Map();
 
 console.log("Background script loaded");
 
@@ -48,6 +50,30 @@ chrome.runtime.onMessageExternal.addListener((message, _sender, sendResponse) =>
   } catch (_err) {
     // Ignore external ping failures.
   }
+});
+
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (changeInfo.status !== "complete") return;
+  if (!isIndeedCandidatesUrl(tab?.url)) return;
+
+  const existingTimer = autoScanTimers.get(tabId);
+  if (existingTimer) {
+    clearTimeout(existingTimer);
+  }
+
+  const timer = setTimeout(() => {
+    autoScanTimers.delete(tabId);
+    void enqueueCandidatesFromTab(tabId);
+  }, AUTO_SCAN_DEBOUNCE_MS);
+
+  autoScanTimers.set(tabId, timer);
+});
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+  const timer = autoScanTimers.get(tabId);
+  if (!timer) return;
+  clearTimeout(timer);
+  autoScanTimers.delete(tabId);
 });
 
 async function handleStartQueue(message, sendResponse) {
@@ -141,6 +167,68 @@ async function processQueue() {
 
   isRunning = false;
   chrome.runtime.sendMessage({ type: "allCandidateProcessed", data: {} });
+}
+
+async function enqueueCandidatesFromTab(tabId) {
+  try {
+    const links = await extractCandidateLinksFromTab(tabId);
+    if (!links.length) return;
+
+    const alreadyProcessed = await getProcessedLinkSet();
+    const pending = links.filter((link) => !alreadyProcessed.has(link) && !queue.includes(link));
+    if (!pending.length) return;
+
+    queue.push(...pending);
+
+    chrome.runtime.sendMessage({
+      type: "backgroundQueueUpdated",
+      data: {
+        discovered: links.length,
+        enqueued: pending.length,
+        pendingTotal: queue.length,
+      },
+    });
+
+    if (!isRunning) {
+      isRunning = true;
+      void processQueue();
+    }
+  } catch (error) {
+    console.warn("Auto queue scan failed:", error);
+  }
+}
+
+async function extractCandidateLinksFromTab(tabId) {
+  const [result] = await chrome.scripting.executeScript({
+    target: { tabId },
+    func: () => {
+      const anchors = Array.from(document.querySelectorAll("a[href]"));
+      const links = anchors
+        .map((a) => {
+          try {
+            return new URL(a.href, window.location.href).toString();
+          } catch (_err) {
+            return "";
+          }
+        })
+        .filter((href) => href.includes("/candidates/view?id="));
+
+      return Array.from(new Set(links));
+    },
+  });
+
+  return Array.isArray(result?.result) ? result.result : [];
+}
+
+function isIndeedCandidatesUrl(rawUrl) {
+  if (!rawUrl) return false;
+  try {
+    const u = new URL(rawUrl);
+    if (u.hostname !== "employers.indeed.com") return false;
+    return u.pathname === "/candidates" || u.pathname.startsWith("/candidates/");
+  } catch (_error) {
+    return false;
+  }
 }
 
 async function searchProfileFromTab(profileUrl) {
