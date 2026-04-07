@@ -2,10 +2,11 @@ const STORAGE_KEYS = {
   processedLinks: "processedLinks",
   apiBaseUrl: "apiBaseUrl",
   authToken: "authToken",
+  officeId: "officeId",
 };
 
-// const DEFAULT_LOCAL_API_BASE_URL = "http://localhost:8000";
-const DEFAULT_LOCAL_API_BASE_URL = "https://staging-login.nurtureme.ai";
+const DEFAULT_LOCAL_API_BASE_URL = "http://localhost:8000";
+// const DEFAULT_LOCAL_API_BASE_URL = "https://staging-login.nurtureme.ai";
 const DEFAULT_UPLOAD_PATH = "/api/upload-resume";
 const PROFILE_WAIT_MS = 9000;
 const TAB_CLOSE_DELAY_MS = 1200;
@@ -17,9 +18,31 @@ const autoScanTimers = new Map();
 
 console.log("Background script loaded");
 
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+chrome.runtime.onMessage.addListener(async (message, sender, sendResponse) => {
   if (message?.type === "startQueue") {
     void handleStartQueue(message, sendResponse);
+    return true;
+  }
+
+  if (message?.type === "resumeQueueIfNeeded") {
+    console.log('resumeQueueIfNeeded received, isRunning:', isRunning, 'queue.length:', queue.length);
+    const officeId = await getOfficeId();
+    console.log('Current officeId:', officeId);
+    if (!isRunning && queue.length > 0 && !officeId) {
+      // Still no office_id, ignore
+      console.log('Office ID still not set, ignoring resume');
+      sendResponse({ status: 'error', message: 'Office ID still not set' });
+      return true;
+    }
+    if (!isRunning && queue.length > 0) {
+      console.log('Resuming queue processing');
+      isRunning = true;
+      processQueue();
+      sendResponse({ status: 'ok', message: 'Resuming queue' });
+    } else {
+      console.log('No queue to resume or already running');
+      sendResponse({ status: 'ok', message: 'No queue to resume or already running' });
+    }
     return true;
   }
 
@@ -101,6 +124,7 @@ async function handleStartQueue(message, sendResponse) {
 
 async function handleSetApiConfig(message, sendResponse) {
   try {
+    console.log('handleSetApiConfig received:', message);
     const updates = {};
     if (typeof message?.apiBaseUrl === "string" && message.apiBaseUrl.trim()) {
       updates[STORAGE_KEYS.apiBaseUrl] = message.apiBaseUrl.trim().replace(/\/+$/, "");
@@ -108,10 +132,15 @@ async function handleSetApiConfig(message, sendResponse) {
     if (typeof message?.authToken === "string") {
       updates[STORAGE_KEYS.authToken] = message.authToken.trim();
     }
+    if (typeof message?.officeId === "string" && message.officeId.trim()) {
+      updates[STORAGE_KEYS.officeId] = message.officeId.trim();
+      console.log('Setting officeId:', message.officeId);
+    }
     await storageSet(updates);
+    console.log('Storage updated:', updates);
     sendResponse({ status: "ok" });
   } catch (error) {
-    console.error("Failed to save API config:", error);
+    console.error("Failed to set API config:", error);
     sendResponse({ status: "error", message: String(error) });
   }
 }
@@ -128,7 +157,47 @@ async function handleResetProgress(sendResponse) {
   }
 }
 
+async function ensureOfficeId() {
+  const token = await getAuthToken();
+  if (token) return true; // Auth token present, backend will resolve office_id from user
+
+  const officeId = await getOfficeId();
+  if (officeId) return true; // Office ID already configured
+
+  // No auth and no office_id — open config page and wait
+  console.warn("No auth token and no office_id configured. Opening office config page.");
+  const configUrl = chrome.runtime.getURL("office-config.html");
+  await chrome.tabs.create({ url: configUrl, active: true });
+
+  // Wait for office_id to be set (poll storage, max 2 minutes)
+  for (let i = 0; i < 240; i++) {
+    await sleep(500);
+    const id = await getOfficeId();
+    if (id) return true;
+  }
+  return false;
+}
+
 async function processQueue() {
+  // Ensure office_id is available before processing
+  const hasOffice = await ensureOfficeId();
+  if (!hasOffice) {
+    console.error("Office ID not provided. Aborting queue processing.");
+    chrome.runtime.sendMessage({
+      type: "resumeUploadFailed",
+      data: { pageUrl: "", error: "Office ID is required. Please configure it and try again." },
+    });
+    isRunning = false;
+    return;
+  }
+
+  // Open progress page
+  const progressUrl = chrome.runtime.getURL('progress.html');
+  await chrome.tabs.create({ url: progressUrl, active: true });
+
+  // Send initial queue size
+  chrome.runtime.sendMessage({ type: 'queueSize', data: { total: queue.length } });
+
   while (queue.length > 0) {
     const profileUrl = queue.shift();
     if (!profileUrl) continue;
@@ -139,22 +208,37 @@ async function processQueue() {
       const storedCandidatesCount = Number(uploadResult?.storedCandidatesCount || 0);
 
       await markLinkAsProcessed(profileUrl);
-      updateExtensionBadgeCount(storedCandidatesCount);
-      chrome.runtime.sendMessage({
-        type: "resumeUploaded",
-        data: {
-          fileName: uploadResult?.fileName || "",
-          link: uploadResult?.link || "",
-          pageUrl: profileData.pageUrl,
-          candidateData: profileData.candidateData,
-          hasResume: Boolean(profileData.resume?.blobUrl),
-          storedCandidatesCount,
-        },
-      });
-      chrome.runtime.sendMessage({
-        type: "searchCountUpdated",
-        data: { storedCandidatesCount },
-      });
+      
+      // If candidate was skipped (duplicate), still update badge but don't count as stored
+      if (uploadResult?.skipped) {
+        chrome.runtime.sendMessage({
+          type: "resumeUploadSkipped",
+          data: {
+            fileName: uploadResult?.fileName || "",
+            link: uploadResult?.link || "",
+            pageUrl: profileData.pageUrl,
+            candidateData: profileData.candidateData,
+            reason: uploadResult?.message || 'Duplicate',
+          },
+        });
+      } else {
+        updateExtensionBadgeCount(storedCandidatesCount);
+        chrome.runtime.sendMessage({
+          type: "resumeUploaded",
+          data: {
+            fileName: uploadResult?.fileName || "",
+            link: uploadResult?.link || "",
+            pageUrl: profileData.pageUrl,
+            candidateData: profileData.candidateData,
+            hasResume: Boolean(profileData.resume?.blobUrl),
+            storedCandidatesCount,
+          },
+        });
+        chrome.runtime.sendMessage({
+          type: "searchCountUpdated",
+          data: { storedCandidatesCount },
+        });
+      }
     } catch (error) {
       console.error("Failed processing candidate:", profileUrl, error);
       // Do not mark failed links as processed so they can retry on the next run.
@@ -201,7 +285,82 @@ async function enqueueCandidatesFromTab(tabId) {
 async function extractCandidateLinksFromTab(tabId) {
   const [result] = await chrome.scripting.executeScript({
     target: { tabId },
-    func: () => {
+    func: async () => {
+      // Function to click load more/show more buttons
+      async function loadAllCandidates() {
+        let previousCount = 0;
+        let attempts = 0;
+        const maxAttempts = 50; // Prevent infinite loops
+        
+        while (attempts < maxAttempts) {
+          // Look for various load more button patterns
+          const loadMoreSelectors = [
+            'button[aria-label*="Load more"]',
+            'button[aria-label*="Show more"]',
+            'button:contains("Load more")',
+            'button:contains("Show more")',
+            'a:contains("Load more")',
+            'a:contains("Show more")',
+            '.load-more',
+            '.show-more',
+            '[data-testid*="load-more"]',
+            '[data-testid*="show-more"]',
+            'button[class*="load"]',
+            'button[class*="more"]'
+          ];
+          
+          let loadMoreButton = null;
+          for (const selector of loadMoreSelectors) {
+            const button = document.querySelector(selector);
+            if (button && (button.offsetParent !== null || getComputedStyle(button).display !== 'none')) {
+              loadMoreButton = button;
+              break;
+            }
+          }
+          
+          // Also check for pagination next buttons
+          const nextButton = document.querySelector('a[aria-label="Next"], button[aria-label="Next"], .pagination-next, .next-page');
+          
+          if (!loadMoreButton && !nextButton) {
+            // No more buttons to click
+            break;
+          }
+          
+          // Count current candidates
+          const currentLinks = Array.from(document.querySelectorAll("a[href]"))
+            .map(a => a.href)
+            .filter(href => href.includes("/candidates/view?id="));
+          
+          if (currentLinks.length === previousCount) {
+            // No new candidates loaded, stop trying
+            break;
+          }
+          
+          previousCount = currentLinks.length;
+          
+          // Click the button
+          try {
+            if (loadMoreButton) {
+              loadMoreButton.click();
+            } else if (nextButton) {
+              nextButton.click();
+            }
+            
+            // Wait for content to load
+            await new Promise(resolve => setTimeout(resolve, 1500));
+          } catch (e) {
+            console.log('Error clicking load more button:', e);
+            break;
+          }
+          
+          attempts++;
+        }
+      }
+      
+      // Load all candidates first
+      await loadAllCandidates();
+      
+      // Now extract all candidate links
       const anchors = Array.from(document.querySelectorAll("a[href]"));
       const links = anchors
         .map((a) => {
@@ -570,14 +729,55 @@ async function searchProfileFromTab(profileUrl) {
   }
 }
 
+// Check if candidate already exists by name or email
+async function candidateExists(name, email) {
+  try {
+    const endpoint = await getUploadEndpoint();
+    const token = await getAuthToken();
+    const officeId = await getOfficeId();
+    
+    const response = await fetch(`${endpoint}/check-candidate`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token && { 'Authorization': `Bearer ${token}` })
+      },
+      body: JSON.stringify({ name, email, office_id: officeId })
+    });
+    
+    if (response.ok) {
+      const result = await response.json();
+      return result.exists === true;
+    }
+  } catch (e) {
+    console.warn('Failed to check candidate existence:', e);
+  }
+  return false;
+}
+
 async function uploadResumeWithProfileData(profileData) {
   const hasResume = Boolean(profileData?.resume?.blobUrl);
   const endpoint = await getUploadEndpoint();
   const token = await getAuthToken();
+  const officeId = await getOfficeId();
+  
+  // Check for duplicates by name/email
+  const candidateName = profileData?.candidateData?.fullName || '';
+  const candidateEmail = profileData?.candidateData?.email || '';
+  if (candidateName || candidateEmail) {
+    const exists = await candidateExists(candidateName, candidateEmail);
+    if (exists) {
+      console.log('Candidate already exists, skipping:', candidateName, candidateEmail);
+      return { success: false, message: 'Candidate already exists', skipped: true };
+    }
+  }
   const formData = new FormData();
   formData.append("resourceType", "indeed");
   formData.append("candidateData", JSON.stringify(profileData?.candidateData || {}));
   formData.append("profileUrl", profileData?.pageUrl || "");
+  if (officeId) {
+    formData.append("office_id", officeId);
+  }
 
   if (hasResume) {
     try {
@@ -649,6 +849,11 @@ async function getUploadEndpoint() {
 async function getAuthToken() {
   const { [STORAGE_KEYS.authToken]: token } = await storageGet([STORAGE_KEYS.authToken]);
   return typeof token === "string" ? token : "";
+}
+
+async function getOfficeId() {
+  const { [STORAGE_KEYS.officeId]: officeId } = await storageGet([STORAGE_KEYS.officeId]);
+  return typeof officeId === "string" ? officeId : "";
 }
 
 async function getProcessedLinkSet() {

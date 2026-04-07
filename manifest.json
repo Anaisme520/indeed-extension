@@ -28,7 +28,7 @@
   },
   "web_accessible_resources": [
     {
-      "resources": ["profileSearch.js"],
+      "resources": ["profileSearch.js", "office-config.html", "office-config.js", "progress.html", "progress.js"],
       "matches": ["https://employers.indeed.com/*"]
     }
   ]

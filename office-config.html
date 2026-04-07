@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Nurtureme - Office Setup</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      width: 380px;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #fff;
+      padding: 24px;
+    }
+    .logo { text-align: center; margin-bottom: 18px; }
+    .logo img { height: 36px; }
+    h2 { font-size: 17px; color: #111827; text-align: center; margin-bottom: 6px; }
+    p { font-size: 13px; color: #6b7280; text-align: center; margin-bottom: 20px; line-height: 1.5; }
+    label { display: block; font-size: 13px; font-weight: 600; color: #374151; margin-bottom: 6px; }
+    input {
+      width: 100%; padding: 10px 12px; border: 1px solid #d1d5db; border-radius: 6px;
+      font-size: 14px; outline: none; transition: border 0.15s;
+    }
+    input:focus { border-color: #3b82f6; box-shadow: 0 0 0 2px rgba(59,130,246,0.15); }
+    .btn {
+      width: 100%; margin-top: 16px; padding: 12px; background: #3b82f6; color: #fff;
+      border: none; border-radius: 8px; font-size: 15px; font-weight: 600; cursor: pointer;
+    }
+    .btn:hover { background: #2563eb; }
+    .btn:disabled { background: #93c5fd; cursor: not-allowed; }
+    .status { margin-top: 12px; font-size: 13px; text-align: center; display: none; }
+    .status.show { display: block; }
+    .status.success { color: #065f46; }
+    .status.error { color: #991b1b; }
+    .current { margin-top: 12px; padding: 10px; background: #f0fdf4; border-radius: 6px; font-size: 12px; color: #065f46; text-align: center; display: none; }
+    .current.show { display: block; }
+  </style>
+</head>
+<body>
+  <div class="logo"><img src="nurturemeTextlogo.png" alt="nurtureme"></div>
+  <h2>Office Setup Required</h2>
+  <p>Please enter your Office ID to associate scraped candidates with your office. You can find this in your Nurtureme admin panel.</p>
+
+  <label for="officeId">Office ID</label>
+  <input type="text" id="officeId" placeholder="e.g. OFF-12345 or your office identifier">
+
+  <div class="current" id="currentOffice"></div>
+
+  <button class="btn" id="saveBtn">Save & Continue</button>
+  <div class="status" id="status"></div>
+
+  <script src="office-config.js"></script>
+</body>
+</html>
